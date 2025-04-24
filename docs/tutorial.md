@@ -10,20 +10,14 @@ There are two ways to set up Task Master: using MCP (recommended) or via npm ins
 
 MCP (Model Control Protocol) provides the easiest way to get started with Task Master directly in your editor.
 
-1. **Install the package**
-
-```bash
-npm i -g task-master-ai
-```
-
-2. **Add the MCP config to your editor** (Cursor recommended, but it works with other text editors):
+1. **Add the MCP config to your editor** (Cursor recommended, but it works with other text editors):
 
 ```json
 {
 	"mcpServers": {
 		"taskmaster-ai": {
 			"command": "npx",
-			"args": ["-y", "task-master-mcp"],
+			"args": ["-y", "--package=task-master-ai", "task-master-ai"],
 			"env": {
 				"ANTHROPIC_API_KEY": "YOUR_ANTHROPIC_API_KEY_HERE",
 				"PERPLEXITY_API_KEY": "YOUR_PERPLEXITY_API_KEY_HERE",
@@ -138,7 +132,7 @@ You can also set up the MCP server in Cursor settings:
 4. Configure with the following details:
    - Name: "Task Master"
    - Type: "Command"
-   - Command: "npx -y task-master-mcp"
+   - Command: "npx -y --package=task-master-ai task-master-ai"
 5. Save the settings
 
 Once configured, you can interact with Task Master's task management commands directly through Cursor's interface, providing a more integrated experience.
