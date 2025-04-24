@@ -2468,7 +2468,67 @@
       "dependencies": [],
       "priority": "medium",
       "details": "Implement a new flag '--from-github' for the add-task command that allows users to create tasks directly from GitHub issues. The implementation should:\n\n1. Accept a GitHub issue URL as an argument (e.g., 'taskmaster add-task --from-github https://github.com/owner/repo/issues/123')\n2. Parse the URL to extract the repository owner, name, and issue number\n3. Use the GitHub API to fetch the issue details including:\n   - Issue title (to be used as task title)\n   - Issue description (to be used as task description)\n   - Issue labels (to be potentially used as tags)\n   - Issue assignees (for reference)\n   - Issue status (open/closed)\n4. Generate a well-formatted task with this information\n5. Include a reference link back to the original GitHub issue\n6. Handle authentication for private repositories using GitHub tokens from environment variables or config file\n7. Implement proper error handling for:\n   - Invalid URLs\n   - Non-existent issues\n   - API rate limiting\n   - Authentication failures\n   - Network issues\n8. Allow users to override or supplement the imported details with additional command-line arguments\n9. Add appropriate documentation in help text and user guide",
-      "testStrategy": "Testing should cover the following scenarios:\n\n1. Unit tests:\n   - Test URL parsing functionality with valid and invalid GitHub issue URLs\n   - Test GitHub API response parsing with mocked API responses\n   - Test error handling for various failure cases\n\n2. Integration tests:\n   - Test with real GitHub public issues (use well-known repositories)\n   - Test with both open and closed issues\n   - Test with issues containing various elements (labels, assignees, comments)\n\n3. Error case tests:\n   - Invalid URL format\n   - Non-existent repository\n   - Non-existent issue number\n   - API rate limit exceeded\n   - Authentication failures for private repos\n\n4. End-to-end tests:\n   - Verify that a task created from a GitHub issue contains all expected information\n   - Verify that the task can be properly managed after creation\n   - Test the interaction with other flags and commands\n\nCreate mock GitHub API responses for testing to avoid hitting rate limits during development and testing. Use environment variables to configure test credentials if needed."
+      "testStrategy": "Testing should cover the following scenarios:\n\n1. Unit tests:\n   - Test URL parsing functionality with valid and invalid GitHub issue URLs\n   - Test GitHub API response parsing with mocked API responses\n   - Test error handling for various failure cases\n\n2. Integration tests:\n   - Test with real GitHub public issues (use well-known repositories)\n   - Test with both open and closed issues\n   - Test with issues containing various elements (labels, assignees, comments)\n\n3. Error case tests:\n   - Invalid URL format\n   - Non-existent repository\n   - Non-existent issue number\n   - API rate limit exceeded\n   - Authentication failures for private repos\n\n4. End-to-end tests:\n   - Verify that a task created from a GitHub issue contains all expected information\n   - Verify that the task can be properly managed after creation\n   - Test the interaction with other flags and commands\n\nCreate mock GitHub API responses for testing to avoid hitting rate limits during development and testing. Use environment variables to configure test credentials if needed.",
+      "subtasks": [
+        {
+          "id": 1,
+          "title": "Update CLI Argument Parser for GitHub Flag",
+          "description": "Modify the `add-task` command's argument parser to recognize and accept the `--from-github` flag, which takes a GitHub issue URL as its value. Implement initial validation for the URL format and extract repository owner, name, and issue number.",
+          "dependencies": [],
+          "details": "Use the existing CLI framework (e.g., argparse, click, commander) to add the new optional argument `--from-github <URL>`. Implement validation logic using regex or URL parsing libraries to ensure the input string matches the expected GitHub issue URL pattern (e.g., 'https://github.com/owner/repo/issues/123'). Extract 'owner', 'repo', and 'issue_number' from the validated URL. Handle parsing errors gracefully.",
+          "status": "pending",
+          "parentTaskId": 45
+        },
+        {
+          "id": 2,
+          "title": "Integrate GitHub API Client and Authentication",
+          "description": "Set up a client to interact with the GitHub REST API. Implement logic to fetch issue details based on owner, repo, and issue number extracted in Subtask 1. Handle authentication using GitHub Personal Access Tokens (PATs) sourced securely from environment variables (e.g., `GITHUB_TOKEN`) or a configuration file for accessing private repositories.",
+          "dependencies": [
+            1
+          ],
+          "details": "Utilize a suitable HTTP client library or a dedicated GitHub API library (e.g., `PyGithub` for Python, `octokit` for Node.js). Implement a function `fetch_github_issue(owner, repo, issue_number)` that constructs the API request URL (e.g., `https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}`). Check for the presence of a `GITHUB_TOKEN` in the environment/config; if found, include it in the `Authorization: token YOUR_TOKEN` header. Parse the JSON response containing issue details.",
+          "status": "pending",
+          "parentTaskId": 45
+        },
+        {
+          "id": 3,
+          "title": "Map GitHub Issue Data to Task Structure and Handle Overrides",
+          "description": "Process the fetched GitHub issue data (title, body, labels, assignees, state) and map it to the application's internal task structure. Include the original GitHub issue URL in the task description or a dedicated field. Allow other command-line arguments (e.g., `--title`, `--description`, `--tags`) to override the corresponding imported data.",
+          "dependencies": [
+            2
+          ],
+          "details": "Create a function `create_task_from_github_data(issue_data, cli_args)` that takes the API response and parsed CLI arguments. Map `issue_data['title']` to task title, `issue_data['body']` to task description, and potentially `issue_data['labels']` to task tags. Add a line like `Original GitHub Issue: {issue_data['html_url']}` to the description or a custom field. Check if specific task fields were provided via other CLI arguments; if so, use those values instead of the ones imported from GitHub. Prepare the final task object.",
+          "status": "pending",
+          "parentTaskId": 45
+        },
+        {
+          "id": 4,
+          "title": "Implement Robust Error Handling for GitHub Import",
+          "description": "Add comprehensive error handling for the entire GitHub import process. Catch and provide informative user messages for invalid URL formats/parsing, GitHub API errors (e.g., 404 Not Found, 403 Forbidden/Rate Limited, 401 Unauthorized), network connection issues, and missing authentication tokens when required for private repositories.",
+          "dependencies": [
+            1,
+            2,
+            3
+          ],
+          "details": "Wrap URL parsing (Subtask 1), API calls (Subtask 2), and data mapping (Subtask 3) in appropriate error handling blocks (e.g., try-except, try-catch). Check HTTP status codes from API responses. Provide clear feedback for specific errors: 'Issue not found' (404), 'Authentication required or token invalid' (401/403), 'API rate limit exceeded' (403 with rate limit headers), 'Network error'. Ensure the application doesn't crash and guides the user on potential fixes (e.g., check URL, set `GITHUB_TOKEN`).",
+          "status": "pending",
+          "parentTaskId": 45
+        },
+        {
+          "id": 5,
+          "title": "Add Documentation and Tests for GitHub Import Feature",
+          "description": "Update the command-line help text for `add-task` to explain the new `--from-github` flag, its usage, expected URL format, and authentication requirements (mentioning `GITHUB_TOKEN`). Add a section to the user guide/README detailing the feature. Implement unit and integration tests.",
+          "dependencies": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "details": "Modify the help string/description for the `--from-github` argument in the CLI definition. Write a new section in `README.md` or `docs/` explaining the feature end-to-end. Use a testing framework (e.g., pytest, Jest) to write unit tests for URL parsing, data mapping, and override logic. Create integration tests that mock the GitHub API HTTP requests/responses to verify the complete flow, including success cases, various error conditions (invalid URL, 404, 401, rate limit), and interaction with override flags.",
+          "status": "pending",
+          "parentTaskId": 45
+        }
+      ]
     },
     {
       "id": 46,

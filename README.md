@@ -1,3 +1,15 @@
+# Fork of Task Master
+
+This is a fork of the Task Master project, which enables the MCP Server to use Google Gemini as the primary AI provider.
+
+Read [.cursor/mcp.json](.cursor/mcp.json) for the MCP config.
+
+Get Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
+
+Full credits to the original Task Master project: [@eyaltoledano](https://x.com/eyaltoledano) & [@RalphEcom](https://x.com/RalphEcom)
+
+---
+
 # Task Master [![GitHub stars](https://img.shields.io/github/stars/eyaltoledano/claude-task-master?style=social)](https://github.com/eyaltoledano/claude-task-master/stargazers)
 
 [![CI](https://github.com/eyaltoledano/claude-task-master/actions/workflows/ci.yml/badge.svg)](https://github.com/eyaltoledano/claude-task-master/actions/workflows/ci.yml) [![npm version](https://badge.fury.io/js/task-master-ai.svg)](https://badge.fury.io/js/task-master-ai) ![Discord Follow](https://dcbadge.limes.pink/api/server/https://discord.gg/2ms58QJjqp?style=flat) [![License: MIT with Commons Clause](https://img.shields.io/badge/license-MIT%20with%20Commons%20Clause-blue.svg)](LICENSE)

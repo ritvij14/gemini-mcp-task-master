@@ -4,6 +4,7 @@
  */
 
 import { Anthropic } from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
 
 // Load environment variables for CLI mode
@@ -44,6 +45,32 @@ export function getAnthropicClientForMCP(session, log = console) {
 		});
 	} catch (error) {
 		log.error(`Failed to initialize Anthropic client: ${error.message}`);
+		throw error;
+	}
+}
+
+/**
+ * Get a Google Gemini client instance initialized with MCP session environment variables
+ * @param {Object} [session] - Session object from MCP containing environment variables
+ * @param {Object} [log] - Logger object to use (defaults to console)
+ * @returns {GoogleGenerativeAI} Google Gemini client instance
+ * @throws {Error} If API key is missing
+ */
+export function getGoogleClientForMCP(session, log = console) {
+	try {
+		// Extract API key from session.env or fall back to environment variables
+		const apiKey = session?.env?.GOOGLE_API_KEY || process.env.GOOGLE_API_KEY;
+
+		if (!apiKey) {
+			throw new Error(
+				'GOOGLE_API_KEY not found in session environment or process.env'
+			);
+		}
+
+		// Initialize and return a new Google client
+		return new GoogleGenerativeAI(apiKey);
+	} catch (error) {
+		log.error(`Failed to initialize Google Gemini client: ${error.message}`);
 		throw error;
 	}
 }
@@ -112,19 +139,40 @@ export async function getBestAvailableAIModel(
 	log = console
 ) {
 	const { requiresResearch = false, claudeOverloaded = false } = options;
+	// Determine primary provider from session or env
+	const primaryProvider =
+		(session?.env?.AI_PROVIDER || process.env.AI_PROVIDER)?.toUpperCase() ||
+		'ANTHROPIC';
 
-	// Test case: When research is needed but no Perplexity, use Claude
+	// Test case: When research is needed but no Perplexity, use primary provider
 	if (
 		requiresResearch &&
-		!(session?.env?.PERPLEXITY_API_KEY || process.env.PERPLEXITY_API_KEY) &&
-		(session?.env?.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY)
+		!(session?.env?.PERPLEXITY_API_KEY || process.env.PERPLEXITY_API_KEY)
 	) {
 		try {
-			log.warn('Perplexity not available for research, using Claude');
-			const client = getAnthropicClientForMCP(session, log);
-			return { type: 'claude', client };
+			log.warn(
+				`Perplexity not available for research, falling back to primary provider (${primaryProvider})`
+			);
+			if (primaryProvider === 'GOOGLE') {
+				const client = getGoogleClientForMCP(session, log);
+				const modelName =
+					session?.env?.GEMINI_MODEL ||
+					process.env.GEMINI_MODEL ||
+					'gemini-2.5-pro-latest';
+				return { type: 'google', client, modelName };
+			} else {
+				// Default to Anthropic
+				const client = getAnthropicClientForMCP(session, log);
+				const modelName =
+					session?.env?.MODEL ||
+					process.env.MODEL ||
+					'claude-3-7-sonnet-20250219';
+				return { type: 'claude', client, modelName };
+			}
 		} catch (error) {
-			log.error(`Claude not available: ${error.message}`);
+			log.error(
+				`Primary provider (${primaryProvider}) not available for research fallback: ${error.message}`
+			);
 			throw new Error('No AI models available for research');
 		}
 	}
@@ -139,45 +187,120 @@ export async function getBestAvailableAIModel(
 			return { type: 'perplexity', client };
 		} catch (error) {
 			log.warn(`Perplexity not available: ${error.message}`);
-			// Fall through to Claude as backup
+			// Fall through to primary provider as backup
 		}
 	}
 
-	// Test case: Claude for overloaded scenario
-	if (
-		claudeOverloaded &&
-		(session?.env?.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY)
-	) {
+	// Handle Claude overloaded scenario - fallback to Google if available, then Perplexity
+	if (claudeOverloaded) {
+		log.warn('Claude is overloaded. Attempting fallback...');
+		// Try Google first
+		if (
+			primaryProvider === 'GOOGLE' ||
+			session?.env?.GOOGLE_API_KEY ||
+			process.env.GOOGLE_API_KEY
+		) {
+			try {
+				log.info('Falling back to Google Gemini due to Claude overload.');
+				const client = getGoogleClientForMCP(session, log);
+				const modelName =
+					session?.env?.GEMINI_MODEL ||
+					process.env.GEMINI_MODEL ||
+					'gemini-2.5-pro-latest';
+				return { type: 'google', client, modelName };
+			} catch (googleError) {
+				log.warn(`Google fallback failed: ${googleError.message}`);
+				// Continue to Perplexity fallback
+			}
+		}
+		// Try Perplexity next
+		if (session?.env?.PERPLEXITY_API_KEY || process.env.PERPLEXITY_API_KEY) {
+			try {
+				log.info('Falling back to Perplexity due to Claude overload.');
+				const client = await getPerplexityClientForMCP(session, log);
+				const modelName =
+					session?.env?.PERPLEXITY_MODEL ||
+					process.env.PERPLEXITY_MODEL ||
+					'sonar-pro';
+				return { type: 'perplexity', client, modelName }; // Include modelName for consistency
+			} catch (perplexityError) {
+				log.warn(`Perplexity fallback failed: ${perplexityError.message}`);
+				// Fall through to using overloaded Claude as last resort
+			}
+		}
+		// Last resort: Use overloaded Claude
 		try {
-			log.warn(
-				'Claude is overloaded but no alternatives are available. Proceeding with Claude anyway.'
-			);
+			log.warn('All fallbacks failed. Attempting to use overloaded Claude.');
 			const client = getAnthropicClientForMCP(session, log);
-			return { type: 'claude', client };
-		} catch (error) {
-			log.error(
-				`Claude not available despite being overloaded: ${error.message}`
+			const modelName =
+				session?.env?.MODEL ||
+				process.env.MODEL ||
+				'claude-3-7-sonnet-2025-02-19';
+			return { type: 'claude', client, modelName };
+		} catch (claudeError) {
+			log.error(`Overloaded Claude also failed: ${claudeError.message}`);
+			throw new Error(
+				'No AI models available, Claude overloaded and fallbacks failed.'
 			);
-			throw new Error('No AI models available');
 		}
 	}
 
-	// Default case: Use Claude when available and not overloaded
-	if (
-		!claudeOverloaded &&
-		(session?.env?.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY)
-	) {
-		try {
+	// Default case: Use the configured primary provider
+	try {
+		if (primaryProvider === 'GOOGLE') {
+			const client = getGoogleClientForMCP(session, log);
+			const modelName =
+				session?.env?.GEMINI_MODEL ||
+				process.env.GEMINI_MODEL ||
+				'gemini-2.5-pro-latest';
+			return { type: 'google', client, modelName };
+		} else {
+			// Default to Anthropic
 			const client = getAnthropicClientForMCP(session, log);
-			return { type: 'claude', client };
-		} catch (error) {
-			log.warn(`Claude not available: ${error.message}`);
-			// Fall through to error if no other options
+			const modelName =
+				session?.env?.MODEL ||
+				process.env.MODEL ||
+				'claude-3-7-sonnet-2025-02-19';
+			return { type: 'claude', client, modelName };
+		}
+	} catch (primaryError) {
+		log.error(
+			`Failed to initialize primary provider (${primaryProvider}): ${primaryError.message}`
+		);
+		// If primary failed, try the *other* primary provider as a fallback
+		try {
+			if (
+				primaryProvider === 'GOOGLE' &&
+				(session?.env?.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY)
+			) {
+				log.warn('Google failed, attempting fallback to Anthropic.');
+				const client = getAnthropicClientForMCP(session, log);
+				const modelName =
+					session?.env?.MODEL ||
+					process.env.MODEL ||
+					'claude-3-7-sonnet-2025-02-19';
+				return { type: 'claude', client, modelName };
+			} else if (
+				primaryProvider === 'ANTHROPIC' &&
+				(session?.env?.GOOGLE_API_KEY || process.env.GOOGLE_API_KEY)
+			) {
+				log.warn('Anthropic failed, attempting fallback to Google.');
+				const client = getGoogleClientForMCP(session, log);
+				const modelName =
+					session?.env?.GEMINI_MODEL ||
+					process.env.GEMINI_MODEL ||
+					'gemini-2.5-pro-latest';
+				return { type: 'google', client, modelName };
+			}
+		} catch (fallbackError) {
+			log.error(`Fallback provider also failed: ${fallbackError.message}`);
 		}
 	}
 
 	// If we got here, no models were successfully initialized
-	throw new Error('No AI models available. Please check your API keys.');
+	throw new Error(
+		'No primary AI models available. Please check your API keys and AI_PROVIDER setting.'
+	);
 }
 
 /**

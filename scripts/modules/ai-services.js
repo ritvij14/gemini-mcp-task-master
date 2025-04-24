@@ -6,11 +6,12 @@
 // NOTE/TODO: Include the beta header output-128k-2025-02-19 in your API request to increase the maximum output token length to 128k tokens for Claude 3.7 Sonnet.
 
 import { Anthropic } from '@anthropic-ai/sdk';
-import OpenAI from 'openai';
-import dotenv from 'dotenv';
-import { CONFIG, log, sanitizePrompt, isSilentMode } from './utils.js';
-import { startLoadingIndicator, stopLoadingIndicator } from './ui.js';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import chalk from 'chalk';
+import dotenv from 'dotenv';
+import OpenAI from 'openai';
+import { startLoadingIndicator, stopLoadingIndicator } from './ui.js';
+import { CONFIG, isSilentMode, log } from './utils.js';
 
 // Load environment variables
 dotenv.config();
@@ -23,6 +24,9 @@ const anthropic = new Anthropic({
 		'anthropic-beta': 'output-128k-2025-02-19'
 	}
 });
+
+// ADDED: Lazy-loaded Google Gemini client
+let googleClient = null;
 
 // Lazy-loaded Perplexity client
 let perplexity = null;
@@ -44,6 +48,22 @@ function getPerplexityClient() {
 		});
 	}
 	return perplexity;
+}
+
+/**
+ * ADDED: Get or initialize the Google Gemini client
+ * @returns {GoogleGenerativeAI} Google Gemini client instance
+ */
+function getGoogleClient() {
+	if (!googleClient) {
+		if (!process.env.GOOGLE_API_KEY) {
+			throw new Error(
+				'GOOGLE_API_KEY environment variable is missing. Set it to use Gemini features.'
+			);
+		}
+		googleClient = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
+	}
+	return googleClient;
 }
 
 /**
@@ -1517,24 +1537,212 @@ function parseTasksFromCompletion(completionText) {
 	}
 }
 
+/**
+ * ADDED: Core function to call Google Gemini API
+ * @param {string} prompt - The user prompt or content
+ * @param {string} modelName - Specific Gemini model name (e.g., 'gemini-2.5-pro-latest')
+ * @param {number} maxOutputTokens - Maximum tokens for the response (if applicable)
+ * @param {number} temperature - Temperature for generation
+ * @returns {Promise<string>} The generated text content from Gemini
+ * @throws {Error} If API call fails
+ */
+async function callGemini(
+	prompt,
+	modelName,
+	maxOutputTokens = 8192,
+	temperature = 0.7
+) {
+	try {
+		log('info', `Calling Google Gemini model: ${modelName}...`);
+		const client = getGoogleClient();
+		const model = client.getGenerativeModel({ model: modelName });
+
+		// Note: Gemini API might have different ways to set max tokens/temp. Adjust as needed.
+		// This is a basic example. Refer to @google/generative-ai docs.
+		const generationConfig = {
+			temperature: temperature,
+			maxOutputTokens: maxOutputTokens
+		};
+
+		const result = await model.generateContent(prompt, generationConfig);
+		const response = await result.response;
+		const text = response.text();
+
+		if (!text) {
+			// Handle cases where Gemini might return no text (e.g., safety blocks)
+			log(
+				'warn',
+				'Gemini response did not contain text. Possible safety block or empty response.'
+			);
+			// Consider inspecting response.promptFeedback or other fields
+			throw new Error('Gemini returned an empty response or was blocked.');
+		}
+
+		log('info', 'Received response from Gemini.');
+		return text;
+	} catch (error) {
+		log('error', `Error calling Google Gemini: ${error.message}`);
+		// Add more specific error handling based on Gemini SDK error types if needed
+		throw new Error(`Gemini API Error: ${error.message}`);
+	}
+}
+
+/**
+ * ADDED: Refactored/New function to call the configured AI provider
+ * @param {string} prompt - The prompt to send to the AI
+ * @param {Object} options - Configuration options
+ * @param {boolean} [options.useResearch=false] - Whether to prioritize a research-capable model (Perplexity)
+ * @param {Object} [options.mcpContext={}] - Context for MCP logging/session { log, session }
+ * @returns {Promise<string>} The AI's response text
+ * @throws {Error} If no suitable AI provider is found or the API call fails
+ */
+async function callAIProvider(prompt, options = {}) {
+	const { useResearch = false, mcpContext = {} } = options;
+	const { session, log: mcpLog } = mcpContext; // Extract MCP context if provided
+
+	let selectedProvider;
+
+	// 1. Handle Research Requirement (Perplexity takes priority)
+	if (useResearch) {
+		try {
+			const perplexityClient = getPerplexityClient();
+			log('info', 'Using Perplexity for research-backed request.');
+			// Note: This assumes Perplexity call structure is similar to OpenAI's chat completions
+			// You might need a specific callPerplexity function if the API differs significantly
+			const response = await perplexityClient.chat.completions.create({
+				model: process.env.PERPLEXITY_MODEL || 'sonar-medium-online',
+				messages: [{ role: 'user', content: prompt }]
+				// Add relevant Perplexity params if needed
+			});
+			const content = response.choices[0]?.message?.content;
+			if (!content) throw new Error('Perplexity returned an empty response.');
+			return content;
+		} catch (error) {
+			log(
+				'warn',
+				`Perplexity research call failed: ${error.message}. Falling back to primary provider.`
+			);
+			// Fall through to primary provider
+		}
+	}
+
+	// 2. Use Primary Configured Provider (Google or Anthropic)
+	try {
+		selectedProvider = getPrimaryAIClient(); // Gets { type, client, modelName }
+
+		if (selectedProvider.type === 'google') {
+			log(
+				'info',
+				`Primary provider configured as Google Gemini (${selectedProvider.modelName}).`
+			);
+			// Pass the model name from selectedProvider
+			return await callGemini(
+				prompt,
+				selectedProvider.modelName, // Use the determined model name
+				parseInt(process.env.MAX_TOKENS || '8192'),
+				parseFloat(process.env.TEMPERATURE || '0.7')
+			);
+		} else if (selectedProvider.type === 'claude') {
+			log(
+				'info',
+				`Primary provider configured as Anthropic Claude (${selectedProvider.modelName}).`
+			);
+			// Prepare parameters for Claude call
+			const params = {
+				model: selectedProvider.modelName, // Use the determined model name
+				max_tokens: parseInt(process.env.MAX_TOKENS || '4000'),
+				temperature: parseFloat(process.env.TEMPERATURE || '0.7'),
+				messages: [{ role: 'user', content: prompt }]
+				// Add system prompt if needed based on context
+			};
+
+			// Use a simplified Anthropic call for this example.
+			// Real implementation should reuse existing handlers like _handleAnthropicStream
+			// or adapt callClaude/handleStreamingRequest.
+			// This requires deeper refactoring of those functions later.
+			const response = await selectedProvider.client.messages.create(params);
+
+			// Extract text content (might vary based on streaming vs non-streaming)
+			let responseText = '';
+			if (response.content && Array.isArray(response.content)) {
+				responseText = response.content.map((block) => block.text).join('');
+			} else {
+				throw new Error('Unexpected Claude response format.');
+			}
+			return responseText;
+		} else {
+			throw new Error(
+				`Unsupported primary AI provider: ${selectedProvider.type}`
+			);
+		}
+	} catch (error) {
+		log(
+			'error',
+			`Error calling primary AI provider (${selectedProvider?.type}): ${error.message}`
+		);
+		// Optionally, add fallback logic here (e.g., try the *other* primary if one failed)
+		throw error; // Re-throw the error to be handled by the calling function
+	}
+}
+
+/**
+ * ADDED: Core function to get the primary AI client
+ * @returns {Object} - The primary AI client and its type
+ */
+function getPrimaryAIClient(options = {}) {
+	const provider = process.env.AI_PROVIDER?.toUpperCase() || 'ANTHROPIC'; // Default to Anthropic
+
+	if (provider === 'GOOGLE') {
+		try {
+			const client = getGoogleClient();
+			// USE GEMINI_MODEL from env, fallback to gemini-1.5-pro-latest
+			const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-pro-latest';
+			log('debug', `Primary AI Provider: Google Gemini (${modelName})`);
+			return { type: 'google', client, modelName };
+		} catch (error) {
+			log(
+				'warn',
+				`Google Gemini client not available: ${error.message}. Falling back...`
+			);
+			// Fall through to Anthropic if Google fails
+		}
+	}
+
+	// Default to Anthropic (or fallback if Google init failed)
+	if (process.env.ANTHROPIC_API_KEY) {
+		const modelName = process.env.MODEL || 'claude-3-7-sonnet-2025-02-19'; // Default model
+		log('debug', `Primary AI Provider: Anthropic Claude (${modelName})`);
+		return { type: 'claude', client: anthropic, modelName };
+	}
+
+	// No primary models available
+	throw new Error(
+		'No primary AI models available. Please set ANTHROPIC_API_KEY or GOOGLE_API_KEY and AI_PROVIDER.'
+	);
+}
+
 // Export AI service functions
 export {
-	getAnthropicClient,
-	getPerplexityClient,
+	_buildAddTaskPrompt,
+	_handleAnthropicStream,
+	callAIProvider,
 	callClaude,
-	handleStreamingRequest,
-	processClaudeResponse,
+	callGemini,
+	generateComplexityAnalysisPrompt,
 	generateSubtasks,
 	generateSubtasksWithPerplexity,
 	generateTaskDescriptionWithPerplexity,
-	parseSubtasksFromText,
-	generateComplexityAnalysisPrompt,
-	handleClaudeError,
+	getAnthropicClient,
 	getAvailableAIModel,
-	parseTaskJsonResponse,
-	_buildAddTaskPrompt,
-	_handleAnthropicStream,
 	getConfiguredAnthropicClient,
-	sendChatWithContext,
-	parseTasksFromCompletion
+	getGoogleClient,
+	getPerplexityClient,
+	getPrimaryAIClient,
+	handleClaudeError,
+	handleStreamingRequest,
+	parseSubtasksFromText,
+	parseTaskJsonResponse,
+	parseTasksFromCompletion,
+	processClaudeResponse,
+	sendChatWithContext
 };
